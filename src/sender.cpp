@@ -91,6 +91,23 @@ private:
         }
     }
 
+    std::size_t getDesiredDiscoveredDevice() {
+        int i = 0;
+
+        std::cout << "Discovered Devices:" << std::endl << std::endl;
+        for (const auto dev : discovered_devices) {
+            std::cout << ++i  << ") " << std::get<0>(dev) << std::endl;
+        }
+
+        std::size_t choice = 0;
+        while (true) {
+            std::cout << std::endl << "Enter choice: " << std::endl;
+            if (std::cin >> choice && choice > 0 && choice <= discovered_devices.size()) {
+                return choice - 1;
+            }
+        }
+    }
+
 public:
     Sender() {
         sock.open(udp::v4());
@@ -106,9 +123,11 @@ public:
             return;
         }
 
-        const auto& top = discovered_devices.front();
-        const std::string& addr_str = std::get<2>(top);
-        const unsigned short port   = std::get<1>(top);
+        std::size_t idx = getDesiredDiscoveredDevice();
+
+        const auto& choice = discovered_devices[idx];
+        const std::string& addr_str = std::get<2>(choice);
+        const unsigned short port   = std::get<1>(choice);
 
         boost::system::error_code ec_addr;
         auto addr = boost::asio::ip::make_address(addr_str, ec_addr);
