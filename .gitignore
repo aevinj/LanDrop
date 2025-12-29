@@ -42,3 +42,6 @@
 
 # vim files
 *.swp
+
+# build files
+build/*
