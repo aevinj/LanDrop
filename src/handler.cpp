@@ -69,7 +69,7 @@ T readX(const std::vector<uint8>& buf, std::size_t off) {
     return value;
 }
 
-vector<uint8> serializeHeader(const Header& header) {
+vector<uint8> serialiseHeader(const Header& header) {
     vector<uint8> res;
 
     if (std::holds_alternative<MetaHeader>(header)) {

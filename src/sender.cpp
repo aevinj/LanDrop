@@ -7,6 +7,11 @@
 #include <thread>
 #include <iostream>
 #include <optional>
+#include <filesystem>
+#include <fstream>
+#include <cstdint>
+
+#include "handler.cpp"
 
 using udp = boost::asio::ip::udp;
 
@@ -130,6 +135,11 @@ private:
         }
     }
 
+    std::uint64_t nextTransferID() {
+        static std::uint64_t count = 0;
+        return count++;
+    }
+
 public:
     Sender() {
         sock.open(udp::v4());
@@ -146,9 +156,48 @@ public:
         }
 
         udp::endpoint receiver = getDesiredDiscoveredDevice();
+        
+        std::ifstream file("example.txt", std::ios::binary);
+        if (!file) {
+            throw std::runtime_error("Couldn't find input file");
+        }
 
-        const std::string msg = "aevin";
-        sock.send_to(boost::asio::buffer(msg), receiver);
+        constexpr std::uint16_t chunk_size = 1200;
+        const std::uint64_t file_size = static_cast<std::uint64_t>(std::filesystem::file_size("example.txt"));
+        const std::uint32_t total_chunks = static_cast<std::uint32_t>((file_size + chunk_size - 1) / chunk_size);
+
+        MetaHeader mh;
+        mh.fileSize = file_size;
+        mh.chunkSize = chunk_size;
+        mh.totalChunks = total_chunks;
+        mh.transferID = nextTransferID();
+        mh.ext = std::array<char, 4>{'t','x','t','\0'};
+
+        auto metaBytes = serialiseHeader(mh);
+        sock.send_to(boost::asio::buffer(metaBytes), receiver);
+
+        std::vector<std::uint8_t> payload(chunk_size);      
+
+        for (std::uint32_t chunk_id = 0; chunk_id < total_chunks; ++chunk_id) {
+            file.read(reinterpret_cast<char*>(payload.data()), payload.size());
+            std::streamsize got = file.gcount();
+            if (got <= 0) break;
+
+            DataHeader dh{};
+            dh.transferID    = mh.transferID;
+            dh.chunkID       = chunk_id;
+            dh.payloadLength = static_cast<std::uint16_t>(got);
+
+            auto dh_bytes = serialiseHeader(dh);
+
+            std::array<boost::asio::const_buffer, 2> bufs{
+                boost::asio::buffer(dh_bytes),
+                boost::asio::buffer(payload.data(), static_cast<std::size_t>(got))
+            };
+
+            sock.send_to(bufs, receiver);
+        }
+
     }
 };
 
@@ -156,4 +205,3 @@ int main() {
     Sender sender;
     sender.sendMsg();
 }
-
