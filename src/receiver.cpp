@@ -6,7 +6,7 @@
 #include <fstream>
 #include <cstdint>
 
-#include "handler.cpp"
+#include "headers.hpp"
 
 using udp = boost::asio::ip::udp;
 using std::cout;
@@ -45,14 +45,6 @@ private:
             return true;
         }
         return false;
-    }
-
-    void outputPayload(const std::size_t len, const string &msg) {
-        cout << "Sender port " << senderDataEndpoint.port() << endl;
-        cout << "Sender address " << senderDataEndpoint.address().to_string() << endl;
-        cout << "Received " << len << " bytes" << endl;
-        cout << "Message: " << msg << endl;
-        cout << endl;
     }
 
     void receiveData() {
@@ -115,13 +107,11 @@ private:
                 const std::size_t payload_off = DATA_LEN;
 
                 if (payload_off + dh.payloadLength > len) {
-                    std::cout << "Malformed DATA: payloadLength=" << dh.payloadLength
-                              << " len=" << len << "\n";
+                    std::cout << "Malformed DATA: payloadLength=" << dh.payloadLength << " len=" << len << "\n";
                     continue;
                 }
 
-                const std::uint64_t offset =
-                    static_cast<std::uint64_t>(dh.chunkID) * meta.chunkSize;
+                const std::uint64_t offset = static_cast<std::uint64_t>(dh.chunkID) * meta.chunkSize;
 
                 out.seekp(static_cast<std::streamoff>(offset));
                 out.write(reinterpret_cast<char*>(buff + payload_off), dh.payloadLength);

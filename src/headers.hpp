@@ -124,14 +124,3 @@ Header parseHeader(const vector<uint8> &buf) {
         throw std::runtime_error("Not yet implemented - termination header");
     }
 }
-
-// int main() {
-//     MetaHeader dh{Type::DATA, 0, 0, 0, 0, {}};
-//     auto v = serializeHeader(dh);
-//     auto x = parseHeader(v);
-//     if (std::holds_alternative<MetaHeader>(x)) {
-//         std::cout << "THIS IS META" << std::endl;
-//     } else if (std::holds_alternative<DataHeader>(x)) {
-//         std::cout << "THIS IS DATA" << std::endl;
-//     }
-// }

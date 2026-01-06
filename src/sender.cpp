@@ -11,7 +11,7 @@
 #include <fstream>
 #include <cstdint>
 
-#include "handler.cpp"
+#include "header.hpp"
 
 using udp = boost::asio::ip::udp;
 
@@ -21,6 +21,7 @@ private:
     udp::socket sock{io};
     unsigned char buff[2048];
     const std::regex r{R"(HERE\s(\S+)\s(\d+)\s*)"};
+    const std::string path("example.txt");
 
     // device name, port number, sender address (from UDP endpoint, not payload)
     std::vector<std::tuple<std::string, unsigned short, std::string>> discovered_devices;
@@ -136,8 +137,8 @@ private:
     }
 
     std::uint64_t nextTransferID() {
-        static std::uint64_t count = 0;
-        return count++;
+        static std::uint64_t currTransferID = 0;
+        return currTransferID++;
     }
 
 public:
@@ -157,13 +158,13 @@ public:
 
         udp::endpoint receiver = getDesiredDiscoveredDevice();
         
-        std::ifstream file("example.txt", std::ios::binary);
+        std::ifstream file(path, std::ios::binary);
         if (!file) {
             throw std::runtime_error("Couldn't find input file");
         }
 
         constexpr std::uint16_t chunk_size = 1200;
-        const std::uint64_t file_size = static_cast<std::uint64_t>(std::filesystem::file_size("example.txt"));
+        const std::uint64_t file_size = static_cast<std::uint64_t>(std::filesystem::file_size(path));
         const std::uint32_t total_chunks = static_cast<std::uint32_t>((file_size + chunk_size - 1) / chunk_size);
 
         MetaHeader mh;
