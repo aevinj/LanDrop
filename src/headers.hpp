@@ -5,6 +5,7 @@
 #include <variant>
 #include <array>
 #include <iostream>
+#include <span>
 
 using uint64 = std::uint64_t;
 using uint32 = std::uint32_t;
@@ -12,7 +13,7 @@ using uint16 = std::uint16_t;
 using uint8 = std::uint8_t;
 using std::vector;
 
-enum Type : uint8 {
+enum class Type : uint8 {
     META = 1,
     DATA = 2,
     TERMINATION = 3
@@ -50,7 +51,7 @@ inline void pushX(vector<uint8>& res, T v) {
 }
 
 template <typename T>
-T readX(const std::vector<uint8>& buf, std::size_t off) {
+T readX(std::span<const uint8> buf, std::size_t off) {
     static_assert(std::is_same_v<T, uint16> ||
                     std::is_same_v<T, uint32> ||
                     std::is_same_v<T, uint64>,
@@ -93,9 +94,15 @@ vector<uint8> serialiseHeader(const Header& header) {
     return res;
 }
 
-Header parseHeader(const vector<uint8> &buf) {
-    if (buf.front() == 1) {
-        // META
+Header parseHeader(std::span<const uint8> buf) {
+    if (buf.size() < 1) throw std::runtime_error("Empty buffer");
+
+    const uint8 type = buf.front();
+
+    if (type == static_cast<uint8>(Type::META)) {
+        constexpr std::size_t META_LEN = 27;
+        if (buf.size() < META_LEN) throw std::runtime_error("Invalid Meta header");
+
         MetaHeader mh; 
         std::size_t off = 1;
 
@@ -109,8 +116,10 @@ Header parseHeader(const vector<uint8> &buf) {
         }
 
         return mh;
-    } else if (buf.front() == 2) {
-        // DATA
+    } else if (type == static_cast<uint8>(Type::DATA)) {
+        constexpr std::size_t DATA_LEN = 15;
+        if (buf.size() < DATA_LEN) throw std::runtime_error("Invalid Data header");
+
         DataHeader dh;
         std::size_t off = 1;
 
@@ -119,8 +128,7 @@ Header parseHeader(const vector<uint8> &buf) {
         dh.payloadLength = readX<uint16>(buf, off); off += 2;
 
         return dh;
-    } else {
-        // TERMINATION
-        throw std::runtime_error("Not yet implemented - termination header");
     }
+
+    throw std::runtime_error("Unknown packet type");
 }

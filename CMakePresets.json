@@ -5,9 +5,9 @@
       "name": "windows-msvc",
       "displayName": "Windows (MSVC + vcpkg)",
       "generator": "Visual Studio 18 2026",
-      "binaryDir": "${sourceDir}/build/windows-msvc",
+      "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
-        "CMAKE_CXX_STANDARD": "17",
+        "CMAKE_CXX_STANDARD": "20",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/extern/vcpkg/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows",
         "VCPKG_MANIFEST_MODE": "ON"

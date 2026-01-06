@@ -5,6 +5,7 @@
 #include <vector>
 #include <fstream>
 #include <cstdint>
+#include <span>
 
 #include "headers.hpp"
 
@@ -23,7 +24,7 @@ private:
     const unsigned short discoveryPort = 40000;
     const unsigned short dataPort = 40001;
 
-    unsigned char buff[2048];
+    std::uint8_t buff[2048];
     udp::endpoint senderDiscoveryEndpoint;
     udp::endpoint senderDataEndpoint;
 
@@ -55,9 +56,7 @@ private:
             );
             if (len == 0) continue;
 
-            // We need a byte-view for parseHeader (prototype: copy into vector)
-            std::vector<std::uint8_t> pkt(buff, buff + len);
-
+            std::span<const std::uint8_t> pkt(buff, buff + len);
             const std::uint8_t t = pkt[0];
 
             if (t == static_cast<std::uint8_t>(Type::META)) {
