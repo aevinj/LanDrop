@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <cstdint>
+#include <algorithm>
 
 #include "headers.hpp"
 
@@ -141,6 +142,10 @@ private:
     }
 
 public:
+    std::ifstream file;
+    std::string extension;
+    std::string inputPath;
+
     Sender() {
         sock.open(udp::v4());
         sock.set_option(boost::asio::socket_base::broadcast(true));
@@ -157,13 +162,8 @@ public:
 
         udp::endpoint receiver = getDesiredDiscoveredDevice();
         
-        std::ifstream file("example.txt", std::ios::binary);
-        if (!file) {
-            throw std::runtime_error("Couldn't find input file");
-        }
-
         constexpr std::uint16_t chunk_size = 1200;
-        const std::uint64_t file_size = static_cast<std::uint64_t>(std::filesystem::file_size("example.txt"));
+        const std::uint64_t file_size = static_cast<std::uint64_t>(std::filesystem::file_size(std::filesystem::path(inputPath)));
         const std::uint32_t total_chunks = static_cast<std::uint32_t>((file_size + chunk_size - 1) / chunk_size);
 
         MetaHeader mh;
@@ -172,10 +172,11 @@ public:
         mh.totalChunks = total_chunks;
         mh.transferID = nextTransferID();
 
-        mh.ext[0] = 't';
-        mh.ext[1] = 'x';
-        mh.ext[2] = 't';
-        mh.ext[3] = '\0';
+        int i = 0;
+        for (; i < std::min(7, static_cast<int>(extension.size())); ++i) {
+            mh.ext[i] = extension[i];
+        }
+        mh.ext[i] = '\0';
 
         auto metaBytes = serialiseHeader(mh);
         sock.send_to(boost::asio::buffer(metaBytes), receiver);
@@ -200,12 +201,34 @@ public:
             };
 
             sock.send_to(bufs, receiver);
+            std::cout << "sent chunk: " << chunk_id << std::endl;
         }
 
     }
 };
 
-int main() {
+std::string extractExtension(const std::string &path) {
+    std::size_t fullStop = path.find_last_of(".");
+    return path.substr(fullStop + 1);
+}
+
+int main(int argc, char *argv[]) {
     Sender sender;
+
+    if (argc == 2) {
+        std::string pathName(argv[1]);
+        std::ifstream file(pathName, std::ios::binary);
+        if (!file) {
+            std::cerr << "Could not find input file" << std::endl;
+            return 1;
+        }
+        sender.file = std::move(file);
+        sender.extension = extractExtension(pathName);
+        sender.inputPath = pathName;
+    } else {
+        std::cerr << "Invalid input arguments" << std::endl;
+        return 1;
+    }
+    
     sender.sendMsg();
 }

@@ -126,11 +126,12 @@ private:
 
                 received[dh.chunkID] = true;
                 ++received_count;
+                cout << "Received chunk: " << dh.chunkID << endl;
 
                 if (received_count == meta.totalChunks) {
                     out.flush();
                     out.close();
-                    std::cout << "Transfer complete: received_example.txt written\n";
+                    std::cout << "Transfer complete: output file written\n";
                     break;
                 }
 
