@@ -171,7 +171,11 @@ public:
         mh.chunkSize = chunk_size;
         mh.totalChunks = total_chunks;
         mh.transferID = nextTransferID();
-        mh.ext = std::array<char, 4>{'t','x','t','\0'};
+
+        mh.ext[0] = 't';
+        mh.ext[1] = 'x';
+        mh.ext[2] = 't';
+        mh.ext[3] = '\0';
 
         auto metaBytes = serialiseHeader(mh);
         sock.send_to(boost::asio::buffer(metaBytes), receiver);

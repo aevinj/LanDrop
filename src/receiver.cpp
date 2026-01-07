@@ -34,8 +34,8 @@ private:
     std::vector<bool> received;
     std::uint32_t received_count = 0;
 
-    static constexpr std::size_t META_LEN = 27;
-    static constexpr std::size_t DATA_LEN = 15;
+
+    std::optional<boost::asio::ip::address> chosenSenderAddr;
 
     bool handleDiscovery(const string &msg) {
         if (msg == "DISCOVER") {
@@ -43,6 +43,7 @@ private:
             discoverySock.send_to(boost::asio::buffer(reply), senderDiscoveryEndpoint);
             return false;
         } else if (msg == "CHOSEN") {
+            chosenSenderAddr = senderDiscoveryEndpoint.address();
             return true;
         }
         return false;
@@ -55,6 +56,8 @@ private:
                 senderDataEndpoint
             );
             if (len == 0) continue;
+
+            if (chosenSenderAddr.has_value() && chosenSenderAddr.value() != senderDataEndpoint.address()) continue;
 
             std::span<const std::uint8_t> pkt(buff, buff + len);
             const std::uint8_t t = pkt[0];
@@ -72,7 +75,9 @@ private:
                 received.assign(meta.totalChunks, false);
                 received_count = 0;
 
-                out.open("received_example.txt", std::ios::binary | std::ios::trunc);
+                std::string outputFile = "received_file." + std::string(meta.ext);
+
+                out.open(outputFile, std::ios::binary | std::ios::trunc);
                 if (!out) {
                     std::cout << "Failed to open received_example.txt\n";
                     have_meta = false;
@@ -110,15 +115,17 @@ private:
                     continue;
                 }
 
+                if (received[dh.chunkID]) {
+                    continue;
+                }
+
                 const std::uint64_t offset = static_cast<std::uint64_t>(dh.chunkID) * meta.chunkSize;
 
                 out.seekp(static_cast<std::streamoff>(offset));
                 out.write(reinterpret_cast<char*>(buff + payload_off), dh.payloadLength);
 
-                if (!received[dh.chunkID]) {
-                    received[dh.chunkID] = true;
-                    ++received_count;
-                }
+                received[dh.chunkID] = true;
+                ++received_count;
 
                 if (received_count == meta.totalChunks) {
                     out.flush();

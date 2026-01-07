@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <vector>
 #include <variant>
-#include <array>
 #include <iostream>
 #include <span>
 
@@ -12,6 +11,9 @@ using uint32 = std::uint32_t;
 using uint16 = std::uint16_t;
 using uint8 = std::uint8_t;
 using std::vector;
+
+inline constexpr std::size_t META_LEN = 31;
+inline constexpr std::size_t DATA_LEN = 15;
 
 enum class Type : uint8 {
     META = 1,
@@ -25,7 +27,7 @@ struct MetaHeader {
    uint64 fileSize;
    uint16 chunkSize;
    uint32 totalChunks;
-   std::array<char, 4> ext;
+   char ext[8];
 };
 
 struct DataHeader {
@@ -74,7 +76,7 @@ vector<uint8> serialiseHeader(const Header& header) {
     vector<uint8> res;
 
     if (std::holds_alternative<MetaHeader>(header)) {
-        res.reserve(27);
+        res.reserve(META_LEN);
         const auto& h = std::get<MetaHeader>(header);
         res.push_back(static_cast<uint8>(h.type));
         pushX<uint64>(res, h.transferID);
@@ -83,7 +85,7 @@ vector<uint8> serialiseHeader(const Header& header) {
         pushX<uint32>(res, h.totalChunks);
         for (char c : h.ext) res.push_back(static_cast<uint8>(c));
     } else {
-        res.reserve(15);
+        res.reserve(DATA_LEN);
         const auto& h = std::get<DataHeader>(header);
         res.push_back(static_cast<uint8>(h.type));
         pushX<uint64>(res, h.transferID);
@@ -100,7 +102,6 @@ Header parseHeader(std::span<const uint8> buf) {
     const uint8 type = buf.front();
 
     if (type == static_cast<uint8>(Type::META)) {
-        constexpr std::size_t META_LEN = 27;
         if (buf.size() < META_LEN) throw std::runtime_error("Invalid Meta header");
 
         MetaHeader mh; 
@@ -111,13 +112,12 @@ Header parseHeader(std::span<const uint8> buf) {
         mh.chunkSize   = readX<uint16>(buf, off); off += 2;
         mh.totalChunks = readX<uint32>(buf, off); off += 4;
 
-        for (std::size_t i = 0; i < mh.ext.size(); ++i) {
+        for (std::size_t i = 0; i < 8; ++i) {
             mh.ext[i] = static_cast<char>(buf[off + i]);
         }
 
         return mh;
     } else if (type == static_cast<uint8>(Type::DATA)) {
-        constexpr std::size_t DATA_LEN = 15;
         if (buf.size() < DATA_LEN) throw std::runtime_error("Invalid Data header");
 
         DataHeader dh;
