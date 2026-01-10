@@ -15,6 +15,11 @@ using std::vector;
 inline constexpr std::size_t META_LEN = 31;
 inline constexpr std::size_t DATA_LEN = 15;
 
+struct AckPacket {
+    uint64 transferID;
+    uint32 chunkID;
+};
+
 enum class Type : uint8 {
     META = 1,
     DATA = 2,

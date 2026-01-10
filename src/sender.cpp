@@ -11,6 +11,7 @@
 #include <fstream>
 #include <cstdint>
 #include <algorithm>
+#include <unordered_map>
 
 #include "headers.hpp"
 
@@ -19,9 +20,22 @@ using udp = boost::asio::ip::udp;
 class Sender {
 private:
     boost::asio::io_context io;
-    udp::socket sock{io};
+    udp::socket dataTransferSock{io}, ackSock{io};
+    static constexpr unsigned short dataPort = 40000;
+    static constexpr unsigned short ackPort = 40002;
     unsigned char buff[2048];
     const std::regex r{R"(HERE\s(\S+)\s(\d+)\s*)"};
+
+    std::ifstream file;
+    std::string extension;
+    std::string inputPath;
+
+    static constexpr std::uint16_t chunkSize = 1200;
+    static constexpr std::size_t WINDOW = 50;
+    using Clock = std::chrono::steady_clock;
+    static constexpr auto RTO = std::chrono::milliseconds{50};
+
+    std::vector<std::uint8_t> payload = std::vector<std::uint8_t>(chunkSize);
 
     // device name, port number, sender address (from UDP endpoint, not payload)
     std::vector<std::tuple<std::string, unsigned short, std::string>> discovered_devices;
@@ -61,8 +75,8 @@ private:
 
     void findReceiver() {
         const std::string bMsg = "DISCOVER";
-        udp::endpoint broadcast_endpoint(boost::asio::ip::address_v4::broadcast(), 40000);
-        sock.send_to(boost::asio::buffer(bMsg), broadcast_endpoint);
+        udp::endpoint broadcast_endpoint(boost::asio::ip::address_v4::broadcast(), dataPort);
+        dataTransferSock.send_to(boost::asio::buffer(bMsg), broadcast_endpoint);
 
         using clock = std::chrono::steady_clock;
         auto deadline = clock::now() + std::chrono::milliseconds(1000);
@@ -71,22 +85,13 @@ private:
             udp::endpoint from;
             boost::system::error_code ec;
 
-            std::size_t len = sock.receive_from(
-                boost::asio::buffer(buff, sizeof(buff)),
-                from,
-                /*flags=*/0,
-                ec
-            );
-
+            std::size_t len = 
+                dataTransferSock.receive_from(boost::asio::buffer(buff, sizeof(buff)), from, 0, ec);
             if (ec == boost::asio::error::would_block || ec == boost::asio::error::try_again) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
             }
-            if (ec) {
-                // Real error; ignore for discovery loop
-                continue;
-            }
-            if (len == 0) continue;
+            if (ec || len == 0) continue;
 
             std::string reply(reinterpret_cast<char*>(buff), len);
 
@@ -98,7 +103,7 @@ private:
     }
 
     udp::endpoint formReceiver(int idx) {
-        const auto& choice = discovered_devices[idx];
+        const auto& choice          = discovered_devices[idx];
         const std::string& addr_str = std::get<2>(choice);
         const unsigned short port   = std::get<1>(choice);
 
@@ -112,9 +117,9 @@ private:
     }
 
     void sendReceiverChosen(udp::endpoint receiver) {
-        receiver.port(40000);
+        receiver.port(dataPort);
         std::string msg("CHOSEN"); // not inlining since string literal trails with null terminator
-        sock.send_to(boost::asio::buffer(msg), receiver);
+        dataTransferSock.send_to(boost::asio::buffer(msg), receiver);
     }
 
     udp::endpoint getDesiredDiscoveredDevice() {
@@ -141,15 +146,71 @@ private:
         return currTransferID++;
     }
 
-public:
-    std::ifstream file;
-    std::string extension;
-    std::string inputPath;
+    std::optional<AckPacket> receiveAck() {
+        udp::endpoint from;
+        boost::system::error_code ec;
 
-    Sender() {
-        sock.open(udp::v4());
-        sock.set_option(boost::asio::socket_base::broadcast(true));
-        sock.non_blocking(true);
+        std::size_t ackLen = ackSock.receive_from(
+            boost::asio::buffer(buff, sizeof(buff)),
+            from,
+            0,
+            ec
+        );
+        if (ec == boost::asio::error::would_block || ec == boost::asio::error::try_again
+            || ec || ackLen < 12) {
+            return std::nullopt;
+        }
+
+        std::span<const std::uint8_t> pkt(
+            reinterpret_cast<const std::uint8_t*>(buff),
+            ackLen
+        );
+
+        AckPacket ack{};
+        std::size_t off = 0;
+        ack.transferID = readX<std::uint64_t>(pkt, off); off += 8;
+        ack.chunkID    = readX<std::uint32_t>(pkt, off); off += 4;
+        return ack;
+    }
+
+    void sendChunk(const std::uint32_t chunkID, const std::uint64_t transferID, udp::endpoint &receiver) {
+        const std::uint64_t offset = static_cast<std::uint64_t>(chunkID) * chunkSize;
+
+        file.seekg(static_cast<std::streamoff>(offset));
+        file.read(reinterpret_cast<char*>(payload.data()), payload.size());
+
+        std::streamsize got = file.gcount();
+        if (got <= 0) return;
+
+        DataHeader dh{};
+        dh.transferID    = transferID;
+        dh.chunkID       = chunkID;
+        dh.payloadLength = static_cast<std::uint16_t>(got);
+
+        auto dh_bytes = serialiseHeader(dh);
+
+        std::array<boost::asio::const_buffer, 2> bufs{
+            boost::asio::buffer(dh_bytes),
+            boost::asio::buffer(payload.data(), static_cast<std::size_t>(got))
+        };
+
+        dataTransferSock.send_to(bufs, receiver);
+        std::cout << "sent chunk: " << chunkID << std::endl;
+    }
+
+public:
+    Sender(std::ifstream&& file_, std::string inputPath_, std::string extension_)
+    : file(std::move(file_)), 
+    inputPath(inputPath_), 
+    extension(extension_) {
+        dataTransferSock.open(udp::v4());
+        dataTransferSock.set_option(boost::asio::socket_base::broadcast(true));
+        dataTransferSock.non_blocking(true);
+        dataTransferSock.bind(udp::endpoint(udp::v4(), dataPort));
+
+        ackSock.open(udp::v4());
+        ackSock.bind(udp::endpoint(udp::v4(), ackPort));
+        ackSock.non_blocking(true);
     }
 
     void sendMsg() {
@@ -162,14 +223,13 @@ public:
 
         udp::endpoint receiver = getDesiredDiscoveredDevice();
         
-        constexpr std::uint16_t chunk_size = 1200;
-        const std::uint64_t file_size = static_cast<std::uint64_t>(std::filesystem::file_size(std::filesystem::path(inputPath)));
-        const std::uint32_t total_chunks = static_cast<std::uint32_t>((file_size + chunk_size - 1) / chunk_size);
+        const std::uint64_t fileSize = static_cast<std::uint64_t>(std::filesystem::file_size(std::filesystem::path(inputPath)));
+        const std::uint32_t totalChunks = static_cast<std::uint32_t>((fileSize + chunkSize - 1) / chunkSize);
 
         MetaHeader mh;
-        mh.fileSize = file_size;
-        mh.chunkSize = chunk_size;
-        mh.totalChunks = total_chunks;
+        mh.fileSize = fileSize;
+        mh.chunkSize = chunkSize;
+        mh.totalChunks = totalChunks;
         mh.transferID = nextTransferID();
 
         int i = 0;
@@ -179,31 +239,48 @@ public:
         mh.ext[i] = '\0';
 
         auto metaBytes = serialiseHeader(mh);
-        sock.send_to(boost::asio::buffer(metaBytes), receiver);
+        dataTransferSock.send_to(boost::asio::buffer(metaBytes), receiver);
 
-        std::vector<std::uint8_t> payload(chunk_size);      
+        // ----- Data -------
 
-        for (std::uint32_t chunk_id = 0; chunk_id < total_chunks; ++chunk_id) {
-            file.read(reinterpret_cast<char*>(payload.data()), payload.size());
-            std::streamsize got = file.gcount();
-            if (got <= 0) break;
+        std::vector<bool> acked(totalChunks, false);
+        std::unordered_map<std::uint32_t, Clock::time_point> inFlight;
+        std::uint32_t doneCount = 0;
+        std::uint32_t nextToSend = 0;
 
-            DataHeader dh{};
-            dh.transferID    = mh.transferID;
-            dh.chunkID       = chunk_id;
-            dh.payloadLength = static_cast<std::uint16_t>(got);
+        while (doneCount < totalChunks) {
+            // process any incoming ACKS
+            while (true) {
+                std::optional<AckPacket> ackOpt = receiveAck();
+                if (!ackOpt) break;
 
-            auto dh_bytes = serialiseHeader(dh);
+                const AckPacket &ack = *ackOpt;
+                if (ack.transferID != mh.transferID) continue; 
+                
+                const std::uint32_t id = ack.chunkID;
+                if (id < totalChunks && !acked[id]) {
+                    acked[id] = true;
+                    ++doneCount;
+                    inFlight.erase(id);
+                }
+            }
 
-            std::array<boost::asio::const_buffer, 2> bufs{
-                boost::asio::buffer(dh_bytes),
-                boost::asio::buffer(payload.data(), static_cast<std::size_t>(got))
-            };
+            // fill window
+            while (inFlight.size() < WINDOW && nextToSend < totalChunks) {
+                sendChunk(nextToSend, mh.transferID, receiver);
+                inFlight[nextToSend++] = Clock::now();
+            }
 
-            sock.send_to(bufs, receiver);
-            std::cout << "sent chunk: " << chunk_id << std::endl;
+            // retransmit timed out chunks
+            for (auto& [chunk, time] : inFlight) {
+                if (Clock::now() - time > RTO) {
+                    sendChunk(chunk, mh.transferID, receiver);
+                    time = Clock::now();
+                }
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-
     }
 };
 
@@ -213,22 +290,18 @@ std::string extractExtension(const std::string &path) {
 }
 
 int main(int argc, char *argv[]) {
-    Sender sender;
-
-    if (argc == 2) {
-        std::string pathName(argv[1]);
-        std::ifstream file(pathName, std::ios::binary);
-        if (!file) {
-            std::cerr << "Could not find input file" << std::endl;
-            return 1;
-        }
-        sender.file = std::move(file);
-        sender.extension = extractExtension(pathName);
-        sender.inputPath = pathName;
-    } else {
+    if (argc == 1 || argc > 2) {
         std::cerr << "Invalid input arguments" << std::endl;
         return 1;
     }
-    
+
+    std::string pathName(argv[1]);
+    std::ifstream file(pathName, std::ios::binary);
+    if (!file) {
+        std::cerr << "Could not find input file" << std::endl;
+        return 1;
+    }
+
+    Sender sender(std::move(file), pathName, extractExtension(pathName));
     sender.sendMsg();
 }

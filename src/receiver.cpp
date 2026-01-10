@@ -19,10 +19,12 @@ private:
     boost::asio::io_context io;
     udp::socket discoverySock{io};
     udp::socket dataSock{io};
+    udp::socket ackSock{io};
 
     const string device_name = "Aevin-PC";
-    const unsigned short discoveryPort = 40000;
-    const unsigned short dataPort = 40001;
+    static constexpr unsigned short discoveryPort = 40000;
+    static constexpr unsigned short dataPort = 40001;
+    static constexpr unsigned short senderAckPort = 40002;
 
     std::uint8_t buff[2048];
     udp::endpoint senderDiscoveryEndpoint;
@@ -115,6 +117,14 @@ private:
                     continue;
                 }
 
+                // TODO: send ack
+                std::vector<std::uint8_t> ackMsg;
+                pushX<std::uint64_t>(ackMsg, meta.transferID);
+                pushX<std::uint32_t>(ackMsg, dh.chunkID);
+                
+                ackSock.send_to(boost::asio::buffer(ackMsg), 
+                udp::endpoint(senderDataEndpoint.address(), senderAckPort));
+
                 if (received[dh.chunkID]) {
                     continue;
                 }
@@ -149,6 +159,8 @@ public:
 
         dataSock.open(udp::v4());
         dataSock.bind(udp::endpoint(udp::v4(), dataPort));
+
+        ackSock.open(udp::v4());
     }
 
     void listen() {
