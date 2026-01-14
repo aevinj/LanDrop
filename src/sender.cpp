@@ -21,7 +21,7 @@ class Sender {
 private:
     boost::asio::io_context io;
     udp::socket dataTransferSock{io}, ackSock{io};
-    static constexpr unsigned short dataPort = 40000;
+    static constexpr unsigned short receiverDiscoveryPort = 40000;
     static constexpr unsigned short ackPort = 40002;
     unsigned char buff[2048];
     const std::regex r{R"(HERE\s(\S+)\s(\d+)\s*)"};
@@ -31,7 +31,7 @@ private:
     std::string inputPath;
 
     static constexpr std::uint16_t chunkSize = 1200;
-    static constexpr std::size_t WINDOW = 50;
+    static constexpr std::size_t WINDOW = 300;
     using Clock = std::chrono::steady_clock;
     static constexpr auto RTO = std::chrono::milliseconds{50};
 
@@ -75,7 +75,7 @@ private:
 
     void findReceiver() {
         const std::string bMsg = "DISCOVER";
-        udp::endpoint broadcast_endpoint(boost::asio::ip::address_v4::broadcast(), dataPort);
+        udp::endpoint broadcast_endpoint(boost::asio::ip::address_v4::broadcast(), receiverDiscoveryPort);
         dataTransferSock.send_to(boost::asio::buffer(bMsg), broadcast_endpoint);
 
         using clock = std::chrono::steady_clock;
@@ -117,7 +117,7 @@ private:
     }
 
     void sendReceiverChosen(udp::endpoint receiver) {
-        receiver.port(dataPort);
+        receiver.port(receiverDiscoveryPort);
         std::string msg("CHOSEN"); // not inlining since string literal trails with null terminator
         dataTransferSock.send_to(boost::asio::buffer(msg), receiver);
     }
@@ -206,7 +206,6 @@ public:
         dataTransferSock.open(udp::v4());
         dataTransferSock.set_option(boost::asio::socket_base::broadcast(true));
         dataTransferSock.non_blocking(true);
-        dataTransferSock.bind(udp::endpoint(udp::v4(), dataPort));
 
         ackSock.open(udp::v4());
         ackSock.bind(udp::endpoint(udp::v4(), ackPort));
