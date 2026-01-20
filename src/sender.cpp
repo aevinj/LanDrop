@@ -146,31 +146,35 @@ private:
         return currTransferID++;
     }
 
-    std::optional<AckPacket> receiveAck() {
+    std::optional<std::pair<std::uint64_t, std::vector<std::uint32_t>>> receiveAckBatch() {
         udp::endpoint from;
         boost::system::error_code ec;
 
-        std::size_t ackLen = ackSock.receive_from(
-            boost::asio::buffer(buff, sizeof(buff)),
-            from,
-            0,
-            ec
-        );
-        if (ec == boost::asio::error::would_block || ec == boost::asio::error::try_again
-            || ec || ackLen < 12) {
+        std::size_t n = ackSock.receive_from(boost::asio::buffer(buff, sizeof(buff)), from, 0, ec);
+        if (ec == boost::asio::error::would_block || ec == boost::asio::error::try_again || ec) {
             return std::nullopt;
         }
+        if (n < ACK_BATCH_LEN) return std::nullopt;
 
-        std::span<const std::uint8_t> pkt(
-            reinterpret_cast<const std::uint8_t*>(buff),
-            ackLen
-        );
+        std::span<const std::uint8_t> pkt(reinterpret_cast<const std::uint8_t*>(buff), n);
 
-        AckPacket ack{};
-        std::size_t off = 0;
-        ack.transferID = readX<std::uint64_t>(pkt, off); off += 8;
-        ack.chunkID    = readX<std::uint32_t>(pkt, off); off += 4;
-        return ack;
+        if (pkt[0] != static_cast<std::uint8_t>(Type::ACK_BATCH)) return std::nullopt;
+
+        std::size_t off = 1;
+        std::uint64_t tid = readX<std::uint64_t>(pkt, off); off += 8;
+        std::uint16_t count = readX<std::uint16_t>(pkt, off); off += 2;
+
+        std::size_t need = ACK_BATCH_LEN + static_cast<std::size_t>(count) * 4;
+        if (n < need) return std::nullopt;
+
+        std::vector<std::uint32_t> ids;
+        ids.reserve(count);
+        for (std::uint16_t i = 0; i < count; ++i) {
+            ids.push_back(readX<std::uint32_t>(pkt, off));
+            off += 4;
+        }
+
+        return std::make_optional(std::make_pair(tid, std::move(ids)));
     }
 
     void sendChunk(const std::uint32_t chunkID, const std::uint64_t transferID, udp::endpoint &receiver) {
@@ -195,7 +199,6 @@ private:
         };
 
         dataTransferSock.send_to(bufs, receiver);
-        std::cout << "sent chunk: " << chunkID << std::endl;
     }
 
 public:
@@ -247,20 +250,35 @@ public:
         std::uint32_t doneCount = 0;
         std::uint32_t nextToSend = 0;
 
+        std::uint32_t lastPrintedPercent = 0;
+
         while (doneCount < totalChunks) {
             // process any incoming ACKS
             while (true) {
-                std::optional<AckPacket> ackOpt = receiveAck();
-                if (!ackOpt) break;
+                auto batchOpt = receiveAckBatch();
+                if (!batchOpt) break;
 
-                const AckPacket &ack = *ackOpt;
-                if (ack.transferID != mh.transferID) continue; 
-                
-                const std::uint32_t id = ack.chunkID;
-                if (id < totalChunks && !acked[id]) {
-                    acked[id] = true;
-                    ++doneCount;
-                    inFlight.erase(id);
+                auto& [tid, ids] = batchOpt.value();
+                if (tid != mh.transferID) continue;
+
+                for (auto id : ids) {
+                    if (id < totalChunks && !acked[id]) {
+                        acked[id] = true;
+                        ++doneCount;
+                        inFlight.erase(id);
+
+                        const std::uint32_t percent =
+                            static_cast<std::uint32_t>((static_cast<std::uint64_t>(doneCount) * 100) / totalChunks);
+                        
+                        if (percent > lastPrintedPercent) {
+                            // If we jumped multiple % due to batched ACKs, print each missing step once.
+                            for (std::uint32_t p = lastPrintedPercent + 1; p <= percent; ++p) {
+                                std::cout << "Progress: " << p << "% (" << doneCount << "/" << totalChunks
+                                        << " chunks acked)\n";
+                            }
+                            lastPrintedPercent = percent;
+                        }
+                    }
                 }
             }
 

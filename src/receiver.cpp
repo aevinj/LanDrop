@@ -36,6 +36,11 @@ private:
     std::vector<bool> received;
     std::uint32_t received_count = 0;
 
+    static constexpr std::size_t MAX_ACK_IDS = 256;
+    static constexpr auto ACK_INTERVAL = std::chrono::milliseconds(5);
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point lastAckSend = Clock::now();
+    std::vector<std::uint32_t> pendingAcks;
 
     std::optional<boost::asio::ip::address> chosenSenderAddr;
 
@@ -117,14 +122,6 @@ private:
                     continue;
                 }
 
-                // TODO: send ack
-                std::vector<std::uint8_t> ackMsg;
-                pushX<std::uint64_t>(ackMsg, meta.transferID);
-                pushX<std::uint32_t>(ackMsg, dh.chunkID);
-                
-                ackSock.send_to(boost::asio::buffer(ackMsg), 
-                udp::endpoint(senderDataEndpoint.address(), senderAckPort));
-
                 if (received[dh.chunkID]) {
                     continue;
                 }
@@ -136,11 +133,16 @@ private:
 
                 received[dh.chunkID] = true;
                 ++received_count;
-                cout << "Received chunk: " << dh.chunkID << endl;
+
+                pendingAcks.push_back(dh.chunkID);
+                if (pendingAcks.size() >= MAX_ACK_IDS || (Clock::now() - lastAckSend) >= ACK_INTERVAL) {
+                    flushAckBatch();
+                }
 
                 if (received_count == meta.totalChunks) {
                     out.flush();
                     out.close();
+                    flushAckBatch();
                     std::cout << "Transfer complete: output file written\n";
                     break;
                 }
@@ -150,6 +152,29 @@ private:
 
             std::cout << "Unknown packet type: " << static_cast<int>(t) << "\n";
         }
+    }
+
+    void flushAckBatch() {
+        if (pendingAcks.empty() || !have_meta) return;
+
+        std::vector<std::uint8_t> msg;
+        msg.reserve(ACK_BATCH_LEN + pendingAcks.size() * 4);
+
+        msg.push_back(static_cast<std::uint8_t>(Type::ACK_BATCH));
+        pushX<std::uint64_t>(msg, meta.transferID);
+        pushX<std::uint16_t>(msg, static_cast<std::uint16_t>(pendingAcks.size()));
+
+        for (auto id : pendingAcks) {
+            pushX<std::uint32_t>(msg, id);
+        }
+
+        ackSock.send_to(
+            boost::asio::buffer(msg),
+            udp::endpoint(senderDataEndpoint.address(), senderAckPort)
+        );
+
+        pendingAcks.clear();
+        lastAckSend = Clock::now();
     }
 
 public:
