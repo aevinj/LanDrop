@@ -21,8 +21,10 @@ class Sender {
 private:
     boost::asio::io_context io;
     udp::socket dataTransferSock{io}, ackSock{io};
+
     static constexpr unsigned short receiverDiscoveryPort = 40000;
     static constexpr unsigned short ackPort = 40002;
+
     unsigned char buff[2048];
     const std::regex r{R"(HERE\s(\S+)\s(\d+)\s*)"};
 
@@ -59,7 +61,7 @@ private:
         const std::string dev_name = m[1].str();
         const std::string port_str = m[2].str();
 
-        if (auto port_us = validPort(port_str)) { 
+        if (auto port_us = validPort(port_str)) {
             bool seen = false;
             for (const auto& d : discovered_devices) {
                 if (std::get<2>(d) == addr_str && std::get<1>(d) == port_us.value()) {
@@ -70,7 +72,7 @@ private:
             if (!seen) {
                 discovered_devices.emplace_back(dev_name, port_us.value(), addr_str);
             }
-        } 
+        }
     }
 
     void findReceiver() {
@@ -85,7 +87,7 @@ private:
             udp::endpoint from;
             boost::system::error_code ec;
 
-            std::size_t len = 
+            std::size_t len =
                 dataTransferSock.receive_from(boost::asio::buffer(buff, sizeof(buff)), from, 0, ec);
             if (ec == boost::asio::error::would_block || ec == boost::asio::error::try_again) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -110,7 +112,7 @@ private:
         boost::system::error_code ec_addr;
         auto addr = boost::asio::ip::make_address(addr_str, ec_addr);
         if (ec_addr) {
-            throw "Could not form receiver";
+            throw std::runtime_error("Could not form receiver endpoint");
         }
 
         return udp::endpoint(addr, port);
@@ -118,23 +120,23 @@ private:
 
     void sendReceiverChosen(udp::endpoint receiver) {
         receiver.port(receiverDiscoveryPort);
-        std::string msg("CHOSEN"); // not inlining since string literal trails with null terminator
+        std::string msg("CHOSEN");
         dataTransferSock.send_to(boost::asio::buffer(msg), receiver);
     }
 
     udp::endpoint getDesiredDiscoveredDevice() {
         int i = 0;
 
-        std::cout << "Discovered Devices:" << std::endl << std::endl;
-        for (const auto dev : discovered_devices) {
-            std::cout << ++i  << ") " << std::get<0>(dev) << " port: " << std::get<1>(dev) << std::endl;
+        std::cout << "Discovered Devices:\n\n";
+        for (const auto& dev : discovered_devices) {
+            std::cout << ++i  << ") " << std::get<0>(dev) << " port: " << std::get<1>(dev) << "\n";
         }
 
         std::size_t choice = 0;
         while (true) {
-            std::cout << std::endl << "Enter choice: " << std::endl;
+            std::cout << "\nEnter choice:\n";
             if (std::cin >> choice && choice > 0 && choice <= discovered_devices.size()) {
-                udp::endpoint receiver = formReceiver(choice - 1);
+                udp::endpoint receiver = formReceiver(static_cast<int>(choice - 1));
                 sendReceiverChosen(receiver);
                 return receiver;
             }
@@ -178,11 +180,14 @@ private:
     }
 
     void sendChunk(const std::uint32_t chunkID, const std::uint64_t transferID, udp::endpoint &receiver) {
+        file.clear(); 
+
         const std::uint64_t offset = static_cast<std::uint64_t>(chunkID) * chunkSize;
 
-        file.seekg(static_cast<std::streamoff>(offset));
-        file.read(reinterpret_cast<char*>(payload.data()), payload.size());
+        file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+        if (!file) return;
 
+        file.read(reinterpret_cast<char*>(payload.data()), payload.size());
         std::streamsize got = file.gcount();
         if (got <= 0) return;
 
@@ -203,9 +208,10 @@ private:
 
 public:
     Sender(std::ifstream&& file_, std::string inputPath_, std::string extension_)
-    : file(std::move(file_)), 
-    inputPath(inputPath_), 
-    extension(extension_) {
+        : file(std::move(file_))
+        , extension(std::move(extension_))
+        , inputPath(std::move(inputPath_)) {
+
         dataTransferSock.open(udp::v4());
         dataTransferSock.set_option(boost::asio::socket_base::broadcast(true));
         dataTransferSock.non_blocking(true);
@@ -224,11 +230,13 @@ public:
         }
 
         udp::endpoint receiver = getDesiredDiscoveredDevice();
-        
-        const std::uint64_t fileSize = static_cast<std::uint64_t>(std::filesystem::file_size(std::filesystem::path(inputPath)));
-        const std::uint32_t totalChunks = static_cast<std::uint32_t>((fileSize + chunkSize - 1) / chunkSize);
 
-        MetaHeader mh;
+        const std::uint64_t fileSize =
+            static_cast<std::uint64_t>(std::filesystem::file_size(std::filesystem::path(inputPath)));
+        const std::uint32_t totalChunks =
+            static_cast<std::uint32_t>((fileSize + chunkSize - 1) / chunkSize);
+
+        MetaHeader mh{};
         mh.fileSize = fileSize;
         mh.chunkSize = chunkSize;
         mh.totalChunks = totalChunks;
@@ -236,24 +244,19 @@ public:
 
         int i = 0;
         for (; i < std::min(7, static_cast<int>(extension.size())); ++i) {
-            mh.ext[i] = extension[i];
+            mh.ext[i] = extension[static_cast<std::size_t>(i)];
         }
         mh.ext[i] = '\0';
 
         auto metaBytes = serialiseHeader(mh);
         dataTransferSock.send_to(boost::asio::buffer(metaBytes), receiver);
 
-        // ----- Data -------
-
         std::vector<bool> acked(totalChunks, false);
         std::unordered_map<std::uint32_t, Clock::time_point> inFlight;
         std::uint32_t doneCount = 0;
         std::uint32_t nextToSend = 0;
 
-        std::uint32_t lastPrintedPercent = 0;
-
         while (doneCount < totalChunks) {
-            // process any incoming ACKS
             while (true) {
                 auto batchOpt = receiveAckBatch();
                 if (!batchOpt) break;
@@ -266,29 +269,15 @@ public:
                         acked[id] = true;
                         ++doneCount;
                         inFlight.erase(id);
-
-                        const std::uint32_t percent =
-                            static_cast<std::uint32_t>((static_cast<std::uint64_t>(doneCount) * 100) / totalChunks);
-                        
-                        if (percent > lastPrintedPercent) {
-                            // If we jumped multiple % due to batched ACKs, print each missing step once.
-                            for (std::uint32_t p = lastPrintedPercent + 1; p <= percent; ++p) {
-                                std::cout << "Progress: " << p << "% (" << doneCount << "/" << totalChunks
-                                        << " chunks acked)\n";
-                            }
-                            lastPrintedPercent = percent;
-                        }
                     }
                 }
             }
 
-            // fill window
             while (inFlight.size() < WINDOW && nextToSend < totalChunks) {
                 sendChunk(nextToSend, mh.transferID, receiver);
                 inFlight[nextToSend++] = Clock::now();
             }
 
-            // retransmit timed out chunks
             for (auto& [chunk, time] : inFlight) {
                 if (Clock::now() - time > RTO) {
                     sendChunk(chunk, mh.transferID, receiver);
@@ -301,21 +290,22 @@ public:
     }
 };
 
-std::string extractExtension(const std::string &path) {
-    std::size_t fullStop = path.find_last_of(".");
+static std::string extractExtension(const std::string &path) {
+    std::size_t fullStop = path.find_last_of('.');
+    if (fullStop == std::string::npos || fullStop + 1 >= path.size()) return "";
     return path.substr(fullStop + 1);
 }
 
 int main(int argc, char *argv[]) {
-    if (argc == 1 || argc > 2) {
-        std::cerr << "Invalid input arguments" << std::endl;
+    if (argc != 2) {
+        std::cerr << "Invalid input arguments\n";
         return 1;
     }
 
     std::string pathName(argv[1]);
     std::ifstream file(pathName, std::ios::binary);
     if (!file) {
-        std::cerr << "Could not find input file" << std::endl;
+        std::cerr << "Could not find input file\n";
         return 1;
     }
 

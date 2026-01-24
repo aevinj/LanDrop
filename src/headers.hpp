@@ -1,65 +1,61 @@
+#pragma once
+
 #include <stdexcept>
 #include <type_traits>
 #include <cstdint>
 #include <vector>
 #include <variant>
-#include <iostream>
 #include <span>
 
 using uint64 = std::uint64_t;
 using uint32 = std::uint32_t;
 using uint16 = std::uint16_t;
-using uint8 = std::uint8_t;
+using uint8  = std::uint8_t;
 using std::vector;
 
-inline constexpr std::size_t META_LEN = 31;
-inline constexpr std::size_t DATA_LEN = 15;
+inline constexpr std::size_t META_LEN      = 31;
+inline constexpr std::size_t DATA_LEN      = 15;
 inline constexpr std::size_t ACK_BATCH_LEN = 11;
 
 enum class Type : uint8 {
-    META = 1,
-    DATA = 2,
-    TERMINATION = 3,
-    ACK_BATCH = 4
+    META      = 1,
+    DATA      = 2,
+    ACK_BATCH = 3
 };
 
 struct MetaHeader {
-   Type type = Type::META;
-   uint64 transferID;
-   uint64 fileSize;
-   uint16 chunkSize;
-   uint32 totalChunks;
-   char ext[8];
+    Type  type = Type::META;
+    uint64 transferID{};
+    uint64 fileSize{};
+    uint16 chunkSize{};
+    uint32 totalChunks{};
+    char ext[8]{};
 };
 
 struct DataHeader {
-    Type type = Type::DATA;
-    uint64 transferID;
-    uint32 chunkID;
-    uint16 payloadLength;
+    Type  type = Type::DATA;
+    uint64 transferID{};
+    uint32 chunkID{};
+    uint16 payloadLength{};
 };
 
 using Header = std::variant<MetaHeader, DataHeader>;
 
 template <typename T>
 inline void pushX(vector<uint8>& res, T v) {
-    static_assert(std::is_same_v<T, uint16> ||
-                    std::is_same_v<T, uint32> ||
-                    std::is_same_v<T, uint64>, 
-                    "pushX only supports uint16/uint32/uint64");
+    static_assert(std::is_same_v<T, uint16> || std::is_same_v<T, uint32> || std::is_same_v<T, uint64>,
+                  "pushX only supports uint16/uint32/uint64");
     constexpr std::size_t bits = sizeof(T) * 8;
 
-    for (int shift = bits - 8; shift >= 0; shift -= 8) {
+    for (int shift = static_cast<int>(bits) - 8; shift >= 0; shift -= 8) {
         res.push_back(static_cast<uint8>((v >> shift) & 0xFF));
     }
 }
 
 template <typename T>
-T readX(std::span<const uint8> buf, std::size_t off) {
-    static_assert(std::is_same_v<T, uint16> ||
-                    std::is_same_v<T, uint32> ||
-                    std::is_same_v<T, uint64>,
-                    "readX only supports uint16/uint32/uint64");
+inline T readX(std::span<const uint8> buf, std::size_t off) {
+    static_assert(std::is_same_v<T, uint16> || std::is_same_v<T, uint32> || std::is_same_v<T, uint64>,
+                  "readX only supports uint16/uint32/uint64");
     constexpr std::size_t N = sizeof(T);
 
     if (off + N > buf.size()) {
@@ -70,11 +66,10 @@ T readX(std::span<const uint8> buf, std::size_t off) {
     for (std::size_t i = 0; i < N; ++i) {
         value = static_cast<T>((value << 8) | buf[off + i]);
     }
-
     return value;
 }
 
-vector<uint8> serialiseHeader(const Header& header) {
+inline vector<uint8> serialiseHeader(const Header& header) {
     vector<uint8> res;
 
     if (std::holds_alternative<MetaHeader>(header)) {
@@ -98,7 +93,7 @@ vector<uint8> serialiseHeader(const Header& header) {
     return res;
 }
 
-Header parseHeader(std::span<const uint8> buf) {
+inline Header parseHeader(std::span<const uint8> buf) {
     if (buf.size() < 1) throw std::runtime_error("Empty buffer");
 
     const uint8 type = buf.front();
@@ -106,11 +101,11 @@ Header parseHeader(std::span<const uint8> buf) {
     if (type == static_cast<uint8>(Type::META)) {
         if (buf.size() < META_LEN) throw std::runtime_error("Invalid Meta header");
 
-        MetaHeader mh; 
+        MetaHeader mh{};
         std::size_t off = 1;
 
         mh.transferID  = readX<uint64>(buf, off); off += 8;
-        mh.fileSize    = readX<uint64>(buf, off); off += 8; 
+        mh.fileSize    = readX<uint64>(buf, off); off += 8;
         mh.chunkSize   = readX<uint16>(buf, off); off += 2;
         mh.totalChunks = readX<uint32>(buf, off); off += 4;
 
@@ -119,10 +114,12 @@ Header parseHeader(std::span<const uint8> buf) {
         }
 
         return mh;
-    } else if (type == static_cast<uint8>(Type::DATA)) {
+    }
+
+    if (type == static_cast<uint8>(Type::DATA)) {
         if (buf.size() < DATA_LEN) throw std::runtime_error("Invalid Data header");
 
-        DataHeader dh;
+        DataHeader dh{};
         std::size_t off = 1;
 
         dh.transferID    = readX<uint64>(buf, off); off += 8;
